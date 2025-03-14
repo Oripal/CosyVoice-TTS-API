@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CosyVoice TTS 示例</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        textarea, select, input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+
+            button:hover {
+                background-color: #45a049;
+            }
+
+            button:disabled {
+                background-color: #cccccc;
+                cursor: not-allowed;
+            }
+
+        .range-value {
+            display: inline-block;
+            margin-left: 10px;
+        }
+
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+
+        .loading {
+            color: #856404;
+            background-color: #fff3cd;
+        }
+
+        .success {
+            color: #155724;
+            background-color: #d4edda;
+        }
+
+        .error {
+            color: #721c24;
+            background-color: #f8d7da;
+        }
+
+        #audioPlayer {
+            width: 100%;
+            margin-top: 20px;
+            display: none;
+        }
+
+        #errorDetails {
+            white-space: pre-wrap;
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            max-height: 200px;
+            overflow: auto;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>CosyVoice TTS 演示</h1>
+
+    <div class="form-group">
+        <label for="serverUrl">服务器地址</label>
+        <input type="text" id="serverUrl" placeholder="输入服务器地址 (例如: http://localhost:3005)" value="http://localhost:3005">
+    </div>
+
+    <div class="form-group">
+        <label for="apiKey">API密钥</label>
+        <input type="text" id="apiKey" placeholder="输入API密钥" value="cosyvoice-api-demo">
+    </div>
+
+    <div class="form-group">
+        <label for="text">文本内容</label>
+        <textarea id="text" rows="5" placeholder="请输入要转为语音的文本...">你好，这是一段测试语音，感谢使用CosyVoice！</textarea>
+    </div>
+
+    <div class="form-group">
+        <label for="voice">选择声音</label>
+        <select id="voice">
+            <option value="loading">加载中...</option>
+        </select>
+        <button id="refreshVoices" style="margin-top: 5px;">刷新声音列表</button>
+    </div>
+
+    <div class="form-group">
+        <label for="seed">随机种子</label>
+        <input type="number" id="seed" min="0" value="42" step="1" placeholder="输入随机种子（默认42）">
+        <button id="randomSeedBtn" style="margin-top: 5px;">随机</button>
+    </div>
+
+    <div class="form-group">
+        <label for="speed">语速 (<span id="speedValue">1.0</span>)</label>
+        <input type="range" id="speed" min="0.5" max="2.0" step="0.1" value="1.0">
+    </div>
+
+    <button id="generateBtn">生成语音</button>
+
+    <div id="status" style="display: none;"></div>
+    <div id="errorDetails" style="display: none;"></div>
+
+    <audio id="audioPlayer" controls></audio>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const serverUrlInput = document.getElementById('serverUrl');
+            const apiKeyInput = document.getElementById('apiKey');
+            const textInput = document.getElementById('text');
+            const voiceSelect = document.getElementById('voice');
+            const refreshVoicesBtn = document.getElementById('refreshVoices');
+            const seedInput = document.getElementById('seed');
+            const randomSeedBtn = document.getElementById('randomSeedBtn');
+            const speedInput = document.getElementById('speed');
+            const speedValue = document.getElementById('speedValue');
+            const generateBtn = document.getElementById('generateBtn');
+            const statusDiv = document.getElementById('status');
+            const errorDetailsDiv = document.getElementById('errorDetails');
+            const audioPlayer = document.getElementById('audioPlayer');
+
+            console.log('页面加载完成');
+            console.log('seedInput:', seedInput);
+            console.log('randomSeedBtn:', randomSeedBtn);
+
+            if (localStorage.getItem('serverUrl')) serverUrlInput.value = localStorage.getItem('serverUrl');
+            if (localStorage.getItem('apiKey')) apiKeyInput.value = localStorage.getItem('apiKey');
+            loadVoices().catch(error => console.error('加载声音失败:', error));
+            speedValue.textContent = speedInput.value;
+
+            serverUrlInput.addEventListener('change', saveSettings);
+            apiKeyInput.addEventListener('change', saveSettings);
+            speedInput.addEventListener('input', () => speedValue.textContent = speedInput.value);
+            refreshVoicesBtn.addEventListener('click', () => loadVoices().catch(error => console.error('刷新声音失败:', error)));
+
+            randomSeedBtn.addEventListener('click', () => {
+                const seed = Math.floor(Math.random() * 100000000) + 1;
+                console.log('生成随机种子:', seed);
+                seedInput.value = seed;
+                console.log('设置后的值:', seedInput.value);
+            });
+
+            generateBtn.addEventListener('click', async () => {
+                const serverUrl = serverUrlInput.value.trim();
+                const apiKey = apiKeyInput.value.trim();
+                const text = textInput.value.trim();
+                const voiceId = voiceSelect.value;
+                const seed = parseInt(seedInput.value) || 42;
+                const speed = parseFloat(speedInput.value);
+
+                if (!serverUrl) { showStatus('请输入服务器地址', 'error'); return; }
+                if (!apiKey) { showStatus('请输入API密钥', 'error'); return; }
+                if (!text) { showStatus('请输入要转换的文本', 'error'); return; }
+
+                audioPlayer.style.display = 'none';
+
+                try {
+                    generateBtn.disabled = true;
+                    showStatus('正在生成语音...', 'loading');
+                    hideErrorDetails();
+
+                    const requestData = {
+                        text: text,
+                        voice_id: voiceId,
+                        seed: seed,
+                        speed: speed,
+                        stream: true
+                    };
+
+                    console.log('请求路径:', `${serverUrl}/api/tts`);
+                    console.log('请求数据:', JSON.stringify(requestData));
+
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+                    const response = await fetch(`${serverUrl}/api/tts`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-API-Key': apiKey
+                        },
+                        body: JSON.stringify(requestData),
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(`API错误: ${response.status} - ${errorText}`);
+                    }
+
+                    const arrayBuffer = await response.arrayBuffer();
+                    if (arrayBuffer.byteLength === 0) {
+                        throw new Error('服务器返回了空数据');
+                    }
+
+                    const wavBuffer = pcmToWav(arrayBuffer, 24000, 1, 16);
+                    const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+                    const wavUrl = URL.createObjectURL(wavBlob);
+
+                    audioPlayer.src = wavUrl;
+                    audioPlayer.style.display = 'block';
+                    audioPlayer.onended = () => URL.revokeObjectURL(wavUrl);
+                    audioPlayer.play();
+
+                    showStatus('语音生成成功！', 'success');
+
+                } catch (error) {
+                    console.error('生成语音失败:', error);
+                    showStatus(`生成语音失败`, 'error');
+                    showErrorDetails(error);
+                } finally {
+                    generateBtn.disabled = false;
+                }
+            });
+
+            function saveSettings() {
+                localStorage.setItem('serverUrl', serverUrlInput.value);
+                localStorage.setItem('apiKey', apiKeyInput.value);
+            }
+
+            async function loadVoices() {
+                const serverUrl = serverUrlInput.value.trim();
+                const apiKey = apiKeyInput.value.trim();
+
+                if (!serverUrl) { showStatus('请输入服务器地址', 'error'); return; }
+
+                try {
+                    refreshVoicesBtn.disabled = true;
+                    voiceSelect.innerHTML = '<option value="loading">加载中...</option>';
+                    showStatus('正在加载声音列表...', 'loading');
+
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+                    const response = await fetch(`${serverUrl}/api/voices`, {
+                        method: 'GET',
+                        headers: { 'X-API-Key': apiKey },
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(`HTTP错误: ${response.status} - ${errorText}`);
+                    }
+
+                    const voices = await response.json();
+                    voiceSelect.innerHTML = '';
+
+                    if (voices.length === 0) {
+                        voiceSelect.innerHTML = '<option value="">无可用声音</option>';
+                        showStatus('服务器未返回任何声音', 'error');
+                        return;
+                    }
+
+                    voices.forEach(voice => {
+                        const option = document.createElement('option');
+                        option.value = voice.id;
+                        option.textContent = voice.name || voice.id;
+                        voiceSelect.appendChild(option);
+                    });
+
+                    voiceSelect.value = voices[0].id;
+                    showStatus('声音列表加载成功!', 'success');
+
+                } catch (error) {
+                    voiceSelect.innerHTML = '<option value="">加载失败</option>';
+                    showStatus('加载声音列表失败', 'error');
+                    showErrorDetails(error);
+                } finally {
+                    refreshVoicesBtn.disabled = false;
+                }
+            }
+
+            function showStatus(message, type) {
+                statusDiv.textContent = message;
+                statusDiv.className = type;
+                statusDiv.style.display = 'block';
+            }
+
+            function showErrorDetails(error) {
+                let details = `错误: ${error.message}\n`;
+                if (error.stack) details += `\n堆栈跟踪:\n${error.stack}`;
+                errorDetailsDiv.textContent = details;
+                errorDetailsDiv.style.display = 'block';
+            }
+
+            function hideErrorDetails() {
+                errorDetailsDiv.style.display = 'none';
+            }
+
+            function pcmToWav(pcmBuffer, sampleRate, numChannels, bitsPerSample) {
+                const dataLength = pcmBuffer.byteLength;
+                const wavHeader = new ArrayBuffer(44);
+                const wavHeaderView = new DataView(wavHeader);
+
+                wavHeaderView.setUint8(0, 'R'.charCodeAt(0));
+                wavHeaderView.setUint8(1, 'I'.charCodeAt(0));
+                wavHeaderView.setUint8(2, 'F'.charCodeAt(0));
+                wavHeaderView.setUint8(3, 'F'.charCodeAt(0));
+                wavHeaderView.setUint32(4, 36 + dataLength, true);
+                wavHeaderView.setUint8(8, 'W'.charCodeAt(0));
+                wavHeaderView.setUint8(9, 'A'.charCodeAt(0));
+                wavHeaderView.setUint8(10, 'V'.charCodeAt(0));
+                wavHeaderView.setUint8(11, 'E'.charCodeAt(0));
+                wavHeaderView.setUint8(12, 'f'.charCodeAt(0));
+                wavHeaderView.setUint8(13, 'm'.charCodeAt(0));
+                wavHeaderView.setUint8(14, 't'.charCodeAt(0));
+                wavHeaderView.setUint8(15, ' '.charCodeAt(0));
+                wavHeaderView.setUint32(16, 16, true);
+                wavHeaderView.setUint16(20, 1, true);
+                wavHeaderView.setUint16(22, numChannels, true);
+                wavHeaderView.setUint32(24, sampleRate, true);
+                const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+                wavHeaderView.setUint32(28, byteRate, true);
+                const blockAlign = numChannels * (bitsPerSample / 8);
+                wavHeaderView.setUint16(32, blockAlign, true);
+                wavHeaderView.setUint16(34, bitsPerSample, true);
+                wavHeaderView.setUint8(36, 'd'.charCodeAt(0));
+                wavHeaderView.setUint8(37, 'a'.charCodeAt(0));
+                wavHeaderView.setUint8(38, 't'.charCodeAt(0));
+                wavHeaderView.setUint8(39, 'a'.charCodeAt(0));
+                wavHeaderView.setUint32(40, dataLength, true);
+
+                const wavBuffer = new Uint8Array(wavHeader.byteLength + pcmBuffer.byteLength);
+                wavBuffer.set(new Uint8Array(wavHeader), 0);
+                wavBuffer.set(new Uint8Array(pcmBuffer), wavHeader.byteLength);
+                return wavBuffer;
+            }
+        });
+    </script>
+</body>
+</html>
